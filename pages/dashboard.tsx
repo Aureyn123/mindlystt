@@ -75,6 +75,14 @@ export default function DashboardPage({ user, notes: initialNotes }: InferGetSer
   const isRecordingRef = useRef(false);
   const [integrations, setIntegrations] = useState<Array<{ type: string; enabled: boolean }>>([]);
   const [showIntegrations, setShowIntegrations] = useState(false);
+  const [adminUsers, setAdminUsers] = useState<
+    Array<{ id: string; username: string; email: string; createdAt: number; isAdmin: boolean }>
+  >([]);
+  const [adminTotalUsers, setAdminTotalUsers] = useState<number | null>(null);
+  const [adminUserCount, setAdminUserCount] = useState<number | null>(null);
+  const [adminSearch, setAdminSearch] = useState("");
+  const [adminUsersLoading, setAdminUsersLoading] = useState(false);
+  const [adminUsersError, setAdminUsersError] = useState<string | null>(null);
 
   const filteredNotes = useMemo(() => {
     let filtered: Note[];
@@ -179,9 +187,74 @@ export default function DashboardPage({ user, notes: initialNotes }: InferGetSer
     }
   }
 
+  async function loadAdminUsers(searchTerm = "") {
+    if (!isAdmin) return;
+
+    setAdminUsersLoading(true);
+    setAdminUsersError(null);
+    try {
+      const params = new URLSearchParams();
+      const trimmed = searchTerm.trim();
+      if (trimmed) {
+        params.set("search", trimmed);
+      }
+      const query = params.toString();
+      const response = await fetch(`/api/admin/users${query ? `?${query}` : ""}`);
+      if (!response.ok) {
+        let message = "Erreur lors du chargement des utilisateurs.";
+        if (response.status === 403) {
+          message = "Accès refusé (réservé aux administrateurs).";
+        } else {
+          try {
+            const payload = (await response.json()) as { error?: string };
+            if (payload?.error) {
+              message = payload.error;
+            }
+          } catch {
+            // ignore parsing errors
+          }
+        }
+        setAdminUsers([]);
+        setAdminTotalUsers(null);
+        setAdminUserCount(null);
+        setAdminUsersError(message);
+        return;
+      }
+
+      const data = (await response.json()) as {
+        totalUsers: number;
+        count: number;
+        users: Array<{ id: string; username: string; email: string; createdAt: number; isAdmin: boolean }>;
+      };
+      setAdminTotalUsers(data.totalUsers);
+      setAdminUserCount(data.count);
+      setAdminUsers(data.users);
+    } catch (err) {
+      setAdminUsersError(err instanceof Error ? err.message : "Erreur inconnue");
+    } finally {
+      setAdminUsersLoading(false);
+    }
+  }
+
   useEffect(() => {
     loadNotesRemaining();
   }, []);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setAdminUsers([]);
+      setAdminTotalUsers(null);
+      setAdminUserCount(null);
+      setAdminUsersError(null);
+      return;
+    }
+
+    const handle = setTimeout(() => {
+      void loadAdminUsers(adminSearch);
+    }, 350);
+
+    return () => clearTimeout(handle);
+  }, [adminSearch, isAdmin]);
 
   function toggleNote(noteId: string) {
     setExpandedNotes(prev => {
@@ -571,6 +644,41 @@ export default function DashboardPage({ user, notes: initialNotes }: InferGetSer
       }
     } catch (err) {
       console.error("Erreur lors de la recherche:", err);
+    }
+  }
+
+  async function handleShareReminder(reminderId: string | null) {
+    if (!reminderId) {
+      setError("Aucun rappel sélectionné.");
+      return;
+    }
+    if (!shareUsername.trim()) {
+      setError("Veuillez entrer un pseudo");
+      return;
+    }
+    try {
+      const response = await fetch("/api/shares", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reminderId,
+          shareType: "reminder",
+          sharedWithUsername: shareUsername.replace("@", ""),
+          permission: sharePermission,
+        }),
+      });
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: string };
+        throw new Error(payload.error ?? "Erreur lors du partage");
+      }
+      setShareUsername("");
+      setSharingReminderId(null);
+      setSearchQuery("");
+      setSearchResults([]);
+      setError(null);
+      alert("Rappel partagé avec succès !");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur lors du partage du rappel");
     }
   }
 
@@ -1122,6 +1230,111 @@ export default function DashboardPage({ user, notes: initialNotes }: InferGetSer
                 >
                   ✕
                 </button>
+              </div>
+            </section>
+          )}
+
+          {isAdmin && (
+            <section className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm p-6 space-y-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    🔐 Tableau de bord administrateur
+                  </h2>
+                  <p className="text-sm text-slate-600 dark:text-slate-400">
+                    Consulte la liste des comptes inscrits et recherche un pseudo pour obtenir l'adresse e-mail correspondante.
+                  </p>
+                </div>
+                <div className="p-3 rounded-lg bg-slate-100 dark:bg-slate-700/50 text-sm text-slate-700 dark:text-slate-200 space-y-1 min-w-[220px]">
+                  <p className="font-semibold">
+                    Comptes créés :{" "}
+                    {adminTotalUsers !== null ? adminTotalUsers.toLocaleString("fr-FR") : "—"}
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Résultats affichés :{" "}
+                    {adminUserCount !== null ? adminUserCount.toLocaleString("fr-FR") : "—"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="flex-1">
+                  <label htmlFor="admin-search" className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Rechercher un pseudo
+                  </label>
+                  <input
+                    id="admin-search"
+                    type="search"
+                    value={adminSearch}
+                    onChange={(event) => setAdminSearch(event.target.value)}
+                    placeholder="Exemple : coach_pro, mindlyst_team..."
+                    className="w-full rounded-md border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-900 dark:focus:ring-slate-400"
+                  />
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Astuce : laisse le champ vide pour afficher tous les comptes récents.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadAdminUsers(adminSearch)}
+                  disabled={adminUsersLoading}
+                  className={`w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition ${
+                    adminUsersLoading
+                      ? "bg-slate-300 text-slate-600 dark:bg-slate-600 dark:text-slate-300 cursor-wait"
+                      : "bg-slate-900 text-white hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
+                  }`}
+                >
+                  {adminUsersLoading ? "Chargement..." : "Actualiser"}
+                </button>
+              </div>
+
+              {adminUsersError && (
+                <div className="rounded-md border border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+                  {adminUsersError}
+                </div>
+              )}
+
+              <div className="rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+                <div className="hidden md:grid grid-cols-[1.3fr,1.8fr,1.2fr,0.9fr] gap-4 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-700/50">
+                  <span>Pseudo</span>
+                  <span>Email</span>
+                  <span>Date d'inscription</span>
+                  <span>Statut</span>
+                </div>
+                <div className="divide-y divide-slate-200 dark:divide-slate-700">
+                  {adminUsersLoading && adminUsers.length === 0 ? (
+                    <p className="px-4 py-6 text-sm text-slate-500 dark:text-slate-300">Chargement des utilisateurs...</p>
+                  ) : adminUsers.length === 0 ? (
+                    <p className="px-4 py-6 text-sm text-slate-500 dark:text-slate-300">Aucun utilisateur trouvé pour cette recherche.</p>
+                  ) : (
+                    adminUsers.map((adminUser) => (
+                      <div
+                        key={adminUser.id}
+                        className="px-4 py-3 grid gap-3 md:grid-cols-[1.3fr,1.8fr,1.2fr,0.9fr] md:items-center"
+                      >
+                        <div>
+                          <p className="font-medium text-slate-900 dark:text-white">{adminUser.username}</p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 break-all">ID : {adminUser.id}</p>
+                        </div>
+                        <div className="text-sm text-slate-700 dark:text-slate-300 break-all">{adminUser.email}</div>
+                        <div className="text-sm text-slate-500 dark:text-slate-400">
+                          {new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" }).format(new Date(adminUser.createdAt))}
+                        </div>
+                        <div className="text-xs font-semibold">
+                          {adminUser.isAdmin ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 dark:bg-emerald-500/20 px-2 py-1 text-emerald-700 dark:text-emerald-300">
+                              ⭐ Admin
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 dark:bg-slate-700/40 px-2 py-1 text-slate-600 dark:text-slate-300">
+                              👤 Utilisateur
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             </section>
           )}

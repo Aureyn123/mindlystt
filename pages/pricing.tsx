@@ -2,7 +2,7 @@ import { GetServerSideProps } from "next";
 import Head from "next/head";
 import Link from "next/link";
 import { parseCookies, getSession } from "@/lib/auth";
-import { PLAN_LIMITS } from "@/lib/subscription";
+import { PLAN_LIMITS } from "@/lib/subscription-plans";
 
 type PricingProps = {
   userPlan: "free" | "pro" | null;

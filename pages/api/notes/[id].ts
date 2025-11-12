@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getSession, parseCookies } from "@/lib/auth";
 import { readJson, writeJson } from "@/lib/db";
 
-type NoteCategory = "business" | "perso" | "sport" | "clients" | "autres";
+type NoteCategory = "business" | "perso" | "sport" | "clients" | "urgent" | "autres";
 
 type NoteRecord = {
   id: string;
@@ -15,7 +15,7 @@ type NoteRecord = {
 
 const NOTES_FILE = "notes.json";
 const COOKIE_NAME = "mindlyst_session";
-const ALLOWED_CATEGORIES: NoteCategory[] = ["business", "perso", "sport", "clients", "autres"];
+const ALLOWED_CATEGORIES: NoteCategory[] = ["business", "perso", "sport", "clients", "urgent", "autres"];
 
 async function loadNotes(): Promise<NoteRecord[]> {
   return readJson<NoteRecord[]>(NOTES_FILE, []);

@@ -2,8 +2,9 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { parseCookies, getSession } from "@/lib/auth";
 import { readJson, writeJson } from "@/lib/db";
 import crypto from "crypto";
+import type { NoteShare } from "@/lib/shares";
 
-type NoteCategory = "business" | "perso" | "sport" | "clients" | "autres";
+type NoteCategory = "business" | "perso" | "sport" | "clients" | "urgent" | "autres";
 
 type NoteRecord = {
   id: string;
@@ -47,7 +48,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Inclure les notes partagées avec l'utilisateur
     const { getSharesForUser } = await import("@/lib/shares");
     const shares = await getSharesForUser(userId);
-    const sharedNoteIds = new Set(shares.map(s => s.noteId));
+    const noteShares = shares.filter((share): share is NoteShare => {
+      if (share.type === "note" || !share.type) {
+        return typeof (share as NoteShare).noteId === "string";
+      }
+      return false;
+    });
+    const sharedNoteIds = new Set(noteShares.map(s => s.noteId));
     const sharedNotes = notes.filter(note => sharedNoteIds.has(note.id));
     
     const allNotes = [...userNotes, ...sharedNotes].sort((a, b) => b.createdAt - a.createdAt);

@@ -177,12 +177,19 @@ export async function getSharesByReminder(reminderId: string): Promise<ReminderS
   return shares.filter((s) => s.type === "reminder" && (s as ReminderShare).reminderId === reminderId) as ReminderShare[];
 }
 
+function isNoteShare(s: any): s is NoteShare {
+  return s.type === "note" && typeof s.noteId === "string" && typeof s.sharedWithId === "string";
+}
+
 export async function canUserAccessNote(
   userId: string,
   noteId: string
 ): Promise<{ canAccess: boolean; permission?: "read" | "write" }> {
   const shares = await loadShares();
-  const share = shares.find((s) => s.noteId === noteId && s.sharedWithId === userId);
+  const share = shares.find(
+    (s) => isNoteShare(s) && s.noteId === noteId && s.sharedWithId === userId
+  );
+
   if (share) {
     return { canAccess: true, permission: share.permission };
   }

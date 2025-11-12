@@ -12,11 +12,12 @@
       },
       {
         "date": "2025-11-12",
-        "status": "pending"
+        "status": "completed",
+        "completedAt": 1762969512563
       }
     ],
     "createdAt": 1762900485784,
-    "updatedAt": 1762902925177
+    "updatedAt": 1762969512563
   },
   {
     "id": "1fafbb57-68c5-4a0d-8b67-c4cc96422e03",
@@ -31,10 +32,11 @@
       },
       {
         "date": "2025-11-12",
-        "status": "pending"
+        "status": "completed",
+        "completedAt": 1762969515251
       }
     ],
     "createdAt": 1762900537450,
-    "updatedAt": 1762902925177
+    "updatedAt": 1762969515251
   }
 ]

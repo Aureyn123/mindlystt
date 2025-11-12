@@ -1,29 +1,8 @@
 // Gestion des abonnements pour le SaaS
 import { readJson, writeJson } from "./db";
+import { PLAN_LIMITS, type SubscriptionPlan, type SubscriptionLimits } from "./subscription-plans";
 
-export type SubscriptionPlan = "free" | "pro";
-
-export type SubscriptionLimits = {
-  maxNotesPerDay: number;
-  maxRemindersPerMonth: number;
-  price: number; // en euros
-  features: string[];
-};
-
-export const PLAN_LIMITS: Record<SubscriptionPlan, SubscriptionLimits> = {
-  free: {
-    maxNotesPerDay: 2,
-    maxRemindersPerMonth: 5,
-    price: 0,
-    features: ["notes", "catégories", "filtres", "rappels"],
-  },
-  pro: {
-    maxNotesPerDay: 10,
-    maxRemindersPerMonth: 100,
-    price: 9,
-    features: ["notes", "catégories", "filtres", "rappels", "export"],
-  },
-};
+export { PLAN_LIMITS, SubscriptionPlan, SubscriptionLimits };
 
 export type UserSubscription = {
   userId: string;

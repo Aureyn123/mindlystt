@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { parseCookies, getSession, readUsers } from "@/lib/auth";
-import { getSharesByOwner } from "@/lib/shares";
+import { getSharesByOwner, type NoteShare, type AnyShare } from "@/lib/shares";
 import { readJson } from "@/lib/db";
 
 const COOKIE_NAME = "mindlyst_session";
@@ -36,19 +36,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const users = await readUsers();
     const notes = await readJson<any[]>("notes.json", []);
 
-          // Construire les détails avec pseudos, emails et titres
-          const sharesWithDetails = shares.map((share) => {
-            const sharedWithUser = users.find((u) => u.id === share.sharedWithId);
-            const note = notes.find((n) => n.id === share.noteId);
-            return {
-              shareId: share.id,
-              noteId: share.noteId,
-              noteTitle: note?.title || "Note",
-              sharedWithUsername: sharedWithUser?.username || sharedWithUser?.email?.split("@")[0] || "Utilisateur inconnu",
-              sharedWithEmail: sharedWithUser?.email || "Utilisateur inconnu",
-              permission: share.permission,
-            };
-          });
+    // Construire les détails avec pseudos, emails et titres
+    const noteShares = shares.filter((share): share is NoteShare => {
+      return share.type === "note" || (!share.type && typeof (share as NoteShare).noteId === "string");
+    });
+
+    const sharesWithDetails = noteShares.map((share) => {
+      const sharedWithUser = users.find((u) => u.id === share.sharedWithId);
+      const note = notes.find((n) => n.id === share.noteId);
+      return {
+        shareId: share.id,
+        noteId: share.noteId,
+        noteTitle: note?.title || "Note",
+        sharedWithUsername: sharedWithUser?.username || sharedWithUser?.email?.split("@")[0] || "Utilisateur inconnu",
+        sharedWithEmail: sharedWithUser?.email || "Utilisateur inconnu",
+        permission: share.permission,
+      };
+    });
 
     return res.status(200).json({ shares: sharesWithDetails });
   } catch (error) {

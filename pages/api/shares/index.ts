@@ -11,9 +11,15 @@ import {
   getPublicSharesByNote,
   deletePublicShare,
   type ShareType,
+  type AnyShare,
+  type NoteShare,
 } from "@/lib/shares";
 
 const COOKIE_NAME = "mindlyst_session";
+
+function isNoteShare(share: AnyShare): share is NoteShare {
+  return share.type === "note" || (!share.type && typeof (share as NoteShare).noteId === "string");
+}
 
 async function getAuthenticatedUserId(req: NextApiRequest): Promise<string | null> {
   const cookies = parseCookies(req);
@@ -145,53 +151,70 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(404).json({ error: "Partage non trouvé" });
     }
 
-    console.log("✅ Partage trouvé:", { id: share.id, noteId: share.noteId, ownerId: share.ownerId, sharedWithId: share.sharedWithId });
+    if (isNoteShare(share)) {
+      console.log("✅ Partage de note trouvé:", {
+        id: share.id,
+        noteId: share.noteId,
+        ownerId: share.ownerId,
+        sharedWithId: share.sharedWithId,
+      });
 
-    // Vérifier que l'utilisateur est propriétaire de la note ou le partage lui appartient
-    const { readJson } = await import("@/lib/db");
-    const notes = await readJson<any[]>("notes.json", []);
-    const note = notes.find((n) => n.id === share.noteId);
-    
-    // Si la note n'existe plus, on peut quand même supprimer le partage si l'utilisateur est le propriétaire du partage
-    if (!note) {
-      console.warn("⚠️ Note non trouvée:", share.noteId, "- Vérification des permissions sur le partage uniquement");
-      // Si la note n'existe plus, on permet la suppression si l'utilisateur est le propriétaire du partage ou le destinataire
-      const canDelete = share.ownerId === userId || share.sharedWithId === userId;
-      
+      // Vérifier que l'utilisateur est propriétaire de la note ou le partage lui appartient
+      const { readJson } = await import("@/lib/db");
+      const notes = await readJson<any[]>("notes.json", []);
+      const note = notes.find((n) => n.id === share.noteId);
+
+      if (!note) {
+        console.warn("⚠️ Note non trouvée:", share.noteId, "- Vérification des permissions sur le partage uniquement");
+        const canDelete = share.ownerId === userId || share.sharedWithId === userId;
+
+        if (!canDelete) {
+          console.error(
+            `❌ Permission refusée (note supprimée): userId=${userId}, share.ownerId=${share.ownerId}, share.sharedWithId=${share.sharedWithId}`
+          );
+          return res.status(403).json({ error: "Vous n'avez pas la permission de supprimer ce partage" });
+        }
+
+        await deleteShare(shareId);
+        console.log("✅ Partage supprimé (note n'existe plus)");
+        return res.status(200).json({ success: true, message: "Partage supprimé avec succès" });
+      }
+
+      console.log("📝 Note trouvée:", { id: note.id, userId: note.userId });
+
+      const canDelete = note.userId === userId || share.sharedWithId === userId || share.ownerId === userId;
+
+      console.log("🔐 Vérification permissions:", {
+        canDelete,
+        "note.userId === userId": note.userId === userId,
+        "share.sharedWithId === userId": share.sharedWithId === userId,
+        "share.ownerId === userId": share.ownerId === userId,
+      });
+
       if (!canDelete) {
-        console.error(`❌ Permission refusée (note supprimée): userId=${userId}, share.ownerId=${share.ownerId}, share.sharedWithId=${share.sharedWithId}`);
+        console.error(
+          `❌ Permission refusée: userId=${userId}, note.userId=${note.userId}, share.ownerId=${share.ownerId}, share.sharedWithId=${share.sharedWithId}`
+        );
         return res.status(403).json({ error: "Vous n'avez pas la permission de supprimer ce partage" });
       }
-      
-      // Supprimer le partage même si la note n'existe plus
+
+      console.log("✅ Permission accordée, suppression du partage...");
       await deleteShare(shareId);
-      console.log("✅ Partage supprimé (note n'existe plus)");
+      console.log("✅ Partage supprimé avec succès");
       return res.status(200).json({ success: true, message: "Partage supprimé avec succès" });
     }
-    
-    console.log("📝 Note trouvée:", { id: note.id, userId: note.userId });
-    
-    // L'utilisateur peut supprimer si :
-    // 1. Il est propriétaire de la note (note.userId === userId) - peut supprimer tous les partages de sa note
-    // 2. Ou si le partage lui appartient en tant que destinataire (share.sharedWithId === userId)
-    // 3. Ou si il est le créateur du partage (share.ownerId === userId)
-    const canDelete = note.userId === userId || share.sharedWithId === userId || share.ownerId === userId;
-    
-    console.log("🔐 Vérification permissions:", {
-      canDelete,
-      "note.userId === userId": note.userId === userId,
-      "share.sharedWithId === userId": share.sharedWithId === userId,
-      "share.ownerId === userId": share.ownerId === userId,
-    });
-    
+
+    // Pour les autres types (tâches, habitudes, rappels), autoriser la suppression si l'utilisateur est propriétaire ou destinataire
+    const canDelete = share.ownerId === userId || share.sharedWithId === userId;
     if (!canDelete) {
-      console.error(`❌ Permission refusée: userId=${userId}, note.userId=${note.userId}, share.ownerId=${share.ownerId}, share.sharedWithId=${share.sharedWithId}`);
+      console.error(
+        `❌ Permission refusée (partage non note): userId=${userId}, share.ownerId=${share.ownerId}, share.sharedWithId=${share.sharedWithId}`
+      );
       return res.status(403).json({ error: "Vous n'avez pas la permission de supprimer ce partage" });
     }
 
-    console.log("✅ Permission accordée, suppression du partage...");
     await deleteShare(shareId);
-    console.log("✅ Partage supprimé avec succès");
+    console.log("✅ Partage non-note supprimé avec succès");
     return res.status(200).json({ success: true, message: "Partage supprimé avec succès" });
   }
 
