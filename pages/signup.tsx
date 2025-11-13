@@ -21,9 +21,19 @@ export default function SignupPage() {
         body: JSON.stringify({ email, username, password })
       });
       if (!response.ok) {
-        const payload = (await response.json()) as { error?: string };
-        throw new Error(payload.error ?? "Erreur inattendue");
+        const raw = await response.text();
+        let message = "Erreur inattendue";
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw) as { error?: string; message?: string };
+            message = parsed.message ?? parsed.error ?? message;
+          } catch {
+            message = raw;
+          }
+        }
+        throw new Error(message || "Erreur inattendue");
       }
+      await response.json().catch(() => null);
       await router.push("/login?signup=success");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur inattendue");

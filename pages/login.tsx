@@ -20,9 +20,19 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password })
       });
       if (!response.ok) {
-        const payload = (await response.json()) as { error?: string };
-        throw new Error(payload.error ?? "Identifiants invalides");
+        const raw = await response.text();
+        let message = "Identifiants invalides";
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw) as { error?: string; message?: string };
+            message = parsed.message ?? parsed.error ?? message;
+          } catch {
+            message = raw;
+          }
+        }
+        throw new Error(message || "Identifiants invalides");
       }
+      await response.json().catch(() => null);
       await router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Impossible de se connecter");

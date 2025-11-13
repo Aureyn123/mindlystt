@@ -6,9 +6,11 @@ const COOKIE_NAME = "mindlyst_session";
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
-    return res.status(405).json({ error: "Méthode non autorisée" });
+    res.setHeader("Content-Type", "application/json");
+    return res.status(405).json({ success: false, message: "Méthode non autorisée" });
   }
 
+  res.setHeader("Content-Type", "application/json");
   const cookies = parseCookies(req);
   const token = cookies[COOKIE_NAME];
   if (token) {
