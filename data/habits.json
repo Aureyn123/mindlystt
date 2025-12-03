@@ -14,10 +14,15 @@
         "date": "2025-11-12",
         "status": "completed",
         "completedAt": 1762969512563
+      },
+      {
+        "date": "2025-11-17",
+        "status": "completed",
+        "completedAt": 1763407335428
       }
     ],
     "createdAt": 1762900485784,
-    "updatedAt": 1762969512563
+    "updatedAt": 1763407335428
   },
   {
     "id": "1fafbb57-68c5-4a0d-8b67-c4cc96422e03",
@@ -34,9 +39,29 @@
         "date": "2025-11-12",
         "status": "completed",
         "completedAt": 1762969515251
+      },
+      {
+        "date": "2025-11-17",
+        "status": "completed",
+        "completedAt": 1763407336098
       }
     ],
     "createdAt": 1762900537450,
-    "updatedAt": 1762969515251
+    "updatedAt": 1763407336098
+  },
+  {
+    "id": "68ebce4b-5a4a-4980-bf50-7f640b586ac6",
+    "userId": "82a68e34-a2b5-4031-9820-6bbbfcc0a8c2",
+    "name": "sport",
+    "color": "blue",
+    "dailyRecords": [
+      {
+        "date": "2025-11-17",
+        "status": "completed",
+        "completedAt": 1763407336966
+      }
+    ],
+    "createdAt": 1763407322521,
+    "updatedAt": 1763407336966
   }
 ]

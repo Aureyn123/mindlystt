@@ -1,5 +1,5 @@
 // Gestion des abonnements pour le SaaS
-import { readJson, writeJson } from "./db";
+import { prisma } from "./prisma";
 import { PLAN_LIMITS, type SubscriptionPlan, type SubscriptionLimits } from "./subscription-plans";
 
 export { PLAN_LIMITS, SubscriptionPlan, SubscriptionLimits };
@@ -14,20 +14,66 @@ export type UserSubscription = {
   status: "active" | "canceled" | "past_due" | "trialing";
 };
 
-const SUBSCRIPTIONS_FILE = "subscriptions.json";
-
 export async function loadSubscriptions(): Promise<UserSubscription[]> {
-  return readJson<UserSubscription[]>(SUBSCRIPTIONS_FILE, []);
+  const subscriptions = await prisma.subscription.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return subscriptions.map(sub => ({
+    userId: sub.userId,
+    plan: sub.plan as SubscriptionPlan,
+    startDate: sub.startDate.getTime(),
+    endDate: sub.endDate ? sub.endDate.getTime() : null,
+    stripeCustomerId: sub.stripeCustomerId || undefined,
+    stripeSubscriptionId: sub.stripeSubscriptionId || undefined,
+    status: sub.status as "active" | "canceled" | "past_due" | "trialing",
+  }));
 }
 
 export async function saveSubscriptions(subscriptions: UserSubscription[]): Promise<void> {
-  await writeJson(SUBSCRIPTIONS_FILE, subscriptions);
+  // Cette fonction n'est plus vraiment utilisée mais on la garde pour compatibilité
+  for (const sub of subscriptions) {
+    await prisma.subscription.upsert({
+      where: { userId: sub.userId },
+      update: {
+        plan: sub.plan,
+        startDate: new Date(sub.startDate),
+        endDate: sub.endDate ? new Date(sub.endDate) : null,
+        stripeCustomerId: sub.stripeCustomerId || null,
+        stripeSubscriptionId: sub.stripeSubscriptionId || null,
+        status: sub.status,
+      },
+      create: {
+        userId: sub.userId,
+        plan: sub.plan,
+        startDate: new Date(sub.startDate),
+        endDate: sub.endDate ? new Date(sub.endDate) : null,
+        stripeCustomerId: sub.stripeCustomerId || null,
+        stripeSubscriptionId: sub.stripeSubscriptionId || null,
+        status: sub.status,
+      },
+    });
+  }
 }
 
 export async function getUserSubscription(userId: string): Promise<UserSubscription | null> {
-  const subscriptions = await loadSubscriptions();
-  const subscription = subscriptions.find((s) => s.userId === userId && s.status === "active");
-  return subscription || null;
+  const subscription = await prisma.subscription.findUnique({
+    where: { userId },
+  });
+  
+  if (!subscription || subscription.status !== "active") {
+    return null;
+  }
+  
+  return {
+    userId: subscription.userId,
+    plan: subscription.plan as SubscriptionPlan,
+    startDate: subscription.startDate.getTime(),
+    endDate: subscription.endDate ? subscription.endDate.getTime() : null,
+    stripeCustomerId: subscription.stripeCustomerId || undefined,
+    stripeSubscriptionId: subscription.stripeSubscriptionId || undefined,
+    status: subscription.status as "active" | "canceled" | "past_due" | "trialing",
+  };
 }
 
 export async function createOrUpdateSubscription(
@@ -36,37 +82,43 @@ export async function createOrUpdateSubscription(
   stripeCustomerId?: string,
   stripeSubscriptionId?: string
 ): Promise<UserSubscription> {
-  const subscriptions = await loadSubscriptions();
-  const existing = subscriptions.find((s) => s.userId === userId);
-
-  const newSubscription: UserSubscription = {
-    userId,
-    plan,
-    startDate: Date.now(),
-    endDate: null, // Actif indéfiniment (peut être modifié selon votre logique)
-    stripeCustomerId,
-    stripeSubscriptionId,
-    status: "active",
+  const subscription = await prisma.subscription.upsert({
+    where: { userId },
+    update: {
+      plan,
+      startDate: new Date(),
+      endDate: null, // Actif indéfiniment
+      stripeCustomerId: stripeCustomerId || undefined,
+      stripeSubscriptionId: stripeSubscriptionId || undefined,
+      status: "active",
+    },
+    create: {
+      userId,
+      plan,
+      startDate: new Date(),
+      endDate: null, // Actif indéfiniment
+      stripeCustomerId: stripeCustomerId || undefined,
+      stripeSubscriptionId: stripeSubscriptionId || undefined,
+      status: "active",
+    },
+  });
+  
+  return {
+    userId: subscription.userId,
+    plan: subscription.plan as SubscriptionPlan,
+    startDate: subscription.startDate.getTime(),
+    endDate: subscription.endDate ? subscription.endDate.getTime() : null,
+    stripeCustomerId: subscription.stripeCustomerId || undefined,
+    stripeSubscriptionId: subscription.stripeSubscriptionId || undefined,
+    status: subscription.status as "active" | "canceled" | "past_due" | "trialing",
   };
-
-  if (existing) {
-    const index = subscriptions.indexOf(existing);
-    subscriptions[index] = { ...existing, ...newSubscription };
-  } else {
-    subscriptions.push(newSubscription);
-  }
-
-  await saveSubscriptions(subscriptions);
-  return newSubscription;
 }
 
 export async function cancelSubscription(userId: string): Promise<void> {
-  const subscriptions = await loadSubscriptions();
-  const subscription = subscriptions.find((s) => s.userId === userId);
-  if (subscription) {
-    subscription.status = "canceled";
-    await saveSubscriptions(subscriptions);
-  }
+  await prisma.subscription.update({
+    where: { userId },
+    data: { status: "canceled" },
+  });
 }
 
 export async function getRemainingRemindersThisMonth(userId: string): Promise<number> {
@@ -79,14 +131,17 @@ export async function getRemainingRemindersThisMonth(userId: string): Promise<nu
   if (limit === -1) return Infinity; // Illimité
 
   // Compter les rappels envoyés ce mois-ci
-  const { loadReminders } = await import("./reminders");
-  const reminders = await loadReminders();
-  const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const reminders = await prisma.reminder.findMany({
+    where: {
+      userId,
+      sent: true,
+      createdAt: {
+        gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+      },
+    },
+  });
 
-  const sentThisMonth = reminders.filter(
-    (r) => r.userId === userId && r.sent && r.createdAt >= startOfMonth
-  ).length;
+  const sentThisMonth = reminders.length;
 
   return Math.max(0, limit - sentThisMonth);
 }
@@ -115,14 +170,17 @@ export async function canCreateNote(userId: string): Promise<{ allowed: boolean;
   const limit = PLAN_LIMITS[plan].maxNotesPerDay;
 
   // Compter les notes créées aujourd'hui
-  const { readJson } = await import("./db");
-  const notes = await readJson<any[]>("notes.json", []);
   const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   
-  const notesToday = notes.filter(
-    (n) => n.userId === userId && n.createdAt >= startOfDay
-  ).length;
+  const notesToday = await prisma.note.count({
+    where: {
+      userId,
+      createdAt: {
+        gte: startOfDay,
+      },
+    },
+  });
 
   const remaining = limit - notesToday;
 
@@ -138,13 +196,15 @@ export async function canCreateNote(userId: string): Promise<{ allowed: boolean;
 }
 
 export async function getNotesCreatedToday(userId: string): Promise<number> {
-  const { readJson } = await import("./db");
-  const notes = await readJson<any[]>("notes.json", []);
   const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   
-  return notes.filter(
-    (n) => n.userId === userId && n.createdAt >= startOfDay
-  ).length;
+  return await prisma.note.count({
+    where: {
+      userId,
+      createdAt: {
+        gte: startOfDay,
+      },
+    },
+  });
 }
-

@@ -1,5 +1,5 @@
 // Gestion du partage de notes
-import { readJson, writeJson } from "./db";
+import { prisma } from "./prisma";
 
 export type ShareType = "note" | "task" | "habit" | "reminder";
 
@@ -54,23 +54,88 @@ export type PublicShare = {
   expiresAt?: number; // Optionnel : expiration du lien
 };
 
-const SHARES_FILE = "shares.json";
-const PUBLIC_SHARES_FILE = "public-shares.json";
-
 export async function loadShares(): Promise<AnyShare[]> {
-  return await readJson<AnyShare[]>(SHARES_FILE, []);
+  const shares = await prisma.share.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return shares.map(share => {
+    const baseShare = {
+      id: share.id,
+      ownerId: share.ownerId,
+      sharedWithId: share.sharedWithId,
+      permission: share.permission as "read" | "write",
+      createdAt: share.createdAt.getTime(),
+      type: share.type as ShareType,
+    };
+    
+    if (share.type === "note" && share.noteId) {
+      return { ...baseShare, noteId: share.noteId } as NoteShare;
+    } else if (share.type === "task" && share.taskId) {
+      return { ...baseShare, taskId: share.taskId } as TaskShare;
+    } else if (share.type === "habit" && share.habitId) {
+      return { ...baseShare, habitId: share.habitId } as HabitShare;
+    } else if (share.type === "reminder" && share.reminderId) {
+      return { ...baseShare, reminderId: share.reminderId } as ReminderShare;
+    }
+    
+    // Par défaut, considérer comme NoteShare pour rétrocompatibilité
+    return { ...baseShare, noteId: share.noteId || "", type: "note" } as NoteShare;
+  });
 }
 
 export async function saveShares(shares: AnyShare[]): Promise<void> {
-  await writeJson(SHARES_FILE, shares);
+  // Cette fonction n'est plus vraiment utilisée mais on la garde pour compatibilité
+  // Supprimer tous les partages existants et les recréer
+  await prisma.share.deleteMany({});
+  
+  for (const share of shares) {
+    await prisma.share.create({
+      data: {
+        id: share.id,
+        ownerId: share.ownerId,
+        sharedWithId: share.sharedWithId,
+        permission: share.permission,
+        type: share.type || "note",
+        noteId: "noteId" in share ? share.noteId : null,
+        taskId: "taskId" in share ? share.taskId : null,
+        habitId: "habitId" in share ? share.habitId : null,
+        reminderId: "reminderId" in share ? share.reminderId : null,
+      },
+    });
+  }
 }
 
 export async function loadPublicShares(): Promise<PublicShare[]> {
-  return await readJson<PublicShare[]>(PUBLIC_SHARES_FILE, []);
+  const publicShares = await prisma.publicShare.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return publicShares.map(share => ({
+    id: share.id,
+    noteId: share.noteId,
+    ownerId: share.ownerId,
+    shareToken: share.shareToken,
+    createdAt: share.createdAt.getTime(),
+    expiresAt: share.expiresAt ? share.expiresAt.getTime() : undefined,
+  }));
 }
 
 export async function savePublicShares(shares: PublicShare[]): Promise<void> {
-  await writeJson(PUBLIC_SHARES_FILE, shares);
+  // Cette fonction n'est plus vraiment utilisée mais on la garde pour compatibilité
+  await prisma.publicShare.deleteMany({});
+  
+  for (const share of shares) {
+    await prisma.publicShare.create({
+      data: {
+        id: share.id,
+        noteId: share.noteId,
+        ownerId: share.ownerId,
+        shareToken: share.shareToken,
+        expiresAt: share.expiresAt ? new Date(share.expiresAt) : null,
+      },
+    });
+  }
 }
 
 // Fonction générique pour créer un partage
@@ -81,39 +146,84 @@ export async function createShareGeneric(
   type: ShareType,
   permission: "read" | "write" = "read"
 ): Promise<AnyShare> {
-  const shares = await loadShares();
-  
   // Vérifier si le partage existe déjà
-  const existing = shares.find((s) => {
-    if (type === "note") return (s as NoteShare).noteId === itemId && s.sharedWithId === sharedWithId;
-    if (type === "task") return (s as TaskShare).taskId === itemId && s.sharedWithId === sharedWithId;
-    if (type === "habit") return (s as HabitShare).habitId === itemId && s.sharedWithId === sharedWithId;
-    if (type === "reminder") return (s as ReminderShare).reminderId === itemId && s.sharedWithId === sharedWithId;
-    return false;
+  const whereClause: any = {
+    ownerId,
+    sharedWithId,
+    type,
+  };
+  
+  if (type === "note") {
+    whereClause.noteId = itemId;
+  } else if (type === "task") {
+    whereClause.taskId = itemId;
+  } else if (type === "habit") {
+    whereClause.habitId = itemId;
+  } else if (type === "reminder") {
+    whereClause.reminderId = itemId;
+  }
+  
+  const existing = await prisma.share.findFirst({
+    where: whereClause,
   });
   
   if (existing) {
-    existing.permission = permission;
-    await saveShares(shares);
-    return existing;
+    const updated = await prisma.share.update({
+      where: { id: existing.id },
+      data: { permission },
+    });
+    
+    return {
+      id: updated.id,
+      ownerId: updated.ownerId,
+      sharedWithId: updated.sharedWithId,
+      permission: updated.permission as "read" | "write",
+      createdAt: updated.createdAt.getTime(),
+      type: updated.type as ShareType,
+      ...(type === "note" && { noteId: updated.noteId || "" }),
+      ...(type === "task" && { taskId: updated.taskId || "" }),
+      ...(type === "habit" && { habitId: updated.habitId || "" }),
+      ...(type === "reminder" && { reminderId: updated.reminderId || "" }),
+    } as AnyShare;
   }
 
-  let share: AnyShare;
-  const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const data: any = {
+    ownerId,
+    sharedWithId,
+    permission,
+    type,
+  };
   
   if (type === "note") {
-    share = { id, noteId: itemId, ownerId, sharedWithId, permission, createdAt: Date.now(), type: "note" } as NoteShare;
+    data.noteId = itemId;
   } else if (type === "task") {
-    share = { id, taskId: itemId, ownerId, sharedWithId, permission, createdAt: Date.now(), type: "task" } as TaskShare;
+    data.taskId = itemId;
   } else if (type === "habit") {
-    share = { id, habitId: itemId, ownerId, sharedWithId, permission, createdAt: Date.now(), type: "habit" } as HabitShare;
-  } else {
-    share = { id, reminderId: itemId, ownerId, sharedWithId, permission, createdAt: Date.now(), type: "reminder" } as ReminderShare;
+    data.habitId = itemId;
+  } else if (type === "reminder") {
+    data.reminderId = itemId;
   }
-
-  shares.push(share);
-  await saveShares(shares);
-  return share;
+  
+  const share = await prisma.share.create({ data });
+  
+  const result = {
+    id: share.id,
+    ownerId: share.ownerId,
+    sharedWithId: share.sharedWithId,
+    permission: share.permission as "read" | "write",
+    createdAt: share.createdAt.getTime(),
+    type: share.type as ShareType,
+  };
+  
+  if (type === "note") {
+    return { ...result, noteId: share.noteId || "" } as NoteShare;
+  } else if (type === "task") {
+    return { ...result, taskId: share.taskId || "" } as TaskShare;
+  } else if (type === "habit") {
+    return { ...result, habitId: share.habitId || "" } as HabitShare;
+  } else {
+    return { ...result, reminderId: share.reminderId || "" } as ReminderShare;
+  }
 }
 
 // Fonction de compatibilité pour les notes
@@ -127,54 +237,159 @@ export async function createShare(
 }
 
 export async function deleteShare(shareId: string): Promise<void> {
-  console.log("🗑️ deleteShare appelé avec shareId:", shareId);
-  const shares = await loadShares();
-  console.log("📋 Partages avant suppression:", shares.length);
-  const filtered = shares.filter((s) => s.id !== shareId);
-  console.log("📋 Partages après filtrage:", filtered.length);
-  if (filtered.length === shares.length) {
-    console.error("❌ Aucun partage supprimé ! Le shareId n'existe peut-être pas.");
-  }
-  await saveShares(filtered);
-  console.log("✅ Partages sauvegardés");
+  await prisma.share.delete({
+    where: { id: shareId },
+  });
 }
 
 export async function getSharesForUser(userId: string, type?: ShareType): Promise<AnyShare[]> {
-  const shares = await loadShares();
-  let filtered = shares.filter((s) => s.sharedWithId === userId);
+  const where: any = { sharedWithId: userId };
   if (type) {
-    filtered = filtered.filter((s) => s.type === type || (!s.type && type === "note"));
+    where.type = type;
   }
-  return filtered;
+  
+  const shares = await prisma.share.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return shares.map(share => {
+    const baseShare = {
+      id: share.id,
+      ownerId: share.ownerId,
+      sharedWithId: share.sharedWithId,
+      permission: share.permission as "read" | "write",
+      createdAt: share.createdAt.getTime(),
+      type: share.type as ShareType,
+    };
+    
+    if (share.type === "note" && share.noteId) {
+      return { ...baseShare, noteId: share.noteId } as NoteShare;
+    } else if (share.type === "task" && share.taskId) {
+      return { ...baseShare, taskId: share.taskId } as TaskShare;
+    } else if (share.type === "habit" && share.habitId) {
+      return { ...baseShare, habitId: share.habitId } as HabitShare;
+    } else if (share.type === "reminder" && share.reminderId) {
+      return { ...baseShare, reminderId: share.reminderId } as ReminderShare;
+    }
+    
+    return { ...baseShare, noteId: share.noteId || "", type: "note" } as NoteShare;
+  });
 }
 
 export async function getSharesByOwner(ownerId: string, type?: ShareType): Promise<AnyShare[]> {
-  const shares = await loadShares();
-  let filtered = shares.filter((s) => s.ownerId === ownerId);
+  const where: any = { ownerId };
   if (type) {
-    filtered = filtered.filter((s) => s.type === type || (!s.type && type === "note"));
+    where.type = type;
   }
-  return filtered;
+  
+  const shares = await prisma.share.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return shares.map(share => {
+    const baseShare = {
+      id: share.id,
+      ownerId: share.ownerId,
+      sharedWithId: share.sharedWithId,
+      permission: share.permission as "read" | "write",
+      createdAt: share.createdAt.getTime(),
+      type: share.type as ShareType,
+    };
+    
+    if (share.type === "note" && share.noteId) {
+      return { ...baseShare, noteId: share.noteId } as NoteShare;
+    } else if (share.type === "task" && share.taskId) {
+      return { ...baseShare, taskId: share.taskId } as TaskShare;
+    } else if (share.type === "habit" && share.habitId) {
+      return { ...baseShare, habitId: share.habitId } as HabitShare;
+    } else if (share.type === "reminder" && share.reminderId) {
+      return { ...baseShare, reminderId: share.reminderId } as ReminderShare;
+    }
+    
+    return { ...baseShare, noteId: share.noteId || "", type: "note" } as NoteShare;
+  });
 }
 
 export async function getSharesByNote(noteId: string): Promise<AnyShare[]> {
-  const shares = await loadShares();
-  return shares.filter((s) => (s as NoteShare).noteId === noteId);
+  const shares = await prisma.share.findMany({
+    where: {
+      noteId,
+      type: "note",
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return shares.map(share => ({
+    id: share.id,
+    noteId: share.noteId || "",
+    ownerId: share.ownerId,
+    sharedWithId: share.sharedWithId,
+    permission: share.permission as "read" | "write",
+    createdAt: share.createdAt.getTime(),
+    type: "note" as ShareType,
+  })) as NoteShare[];
 }
 
 export async function getSharesByTask(taskId: string): Promise<TaskShare[]> {
-  const shares = await loadShares();
-  return shares.filter((s) => s.type === "task" && (s as TaskShare).taskId === taskId) as TaskShare[];
+  const shares = await prisma.share.findMany({
+    where: {
+      taskId,
+      type: "task",
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return shares.map(share => ({
+    id: share.id,
+    taskId: share.taskId || "",
+    ownerId: share.ownerId,
+    sharedWithId: share.sharedWithId,
+    permission: share.permission as "read" | "write",
+    createdAt: share.createdAt.getTime(),
+    type: "task" as ShareType,
+  })) as TaskShare[];
 }
 
 export async function getSharesByHabit(habitId: string): Promise<HabitShare[]> {
-  const shares = await loadShares();
-  return shares.filter((s) => s.type === "habit" && (s as HabitShare).habitId === habitId) as HabitShare[];
+  const shares = await prisma.share.findMany({
+    where: {
+      habitId,
+      type: "habit",
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return shares.map(share => ({
+    id: share.id,
+    habitId: share.habitId || "",
+    ownerId: share.ownerId,
+    sharedWithId: share.sharedWithId,
+    permission: share.permission as "read" | "write",
+    createdAt: share.createdAt.getTime(),
+    type: "habit" as ShareType,
+  })) as HabitShare[];
 }
 
 export async function getSharesByReminder(reminderId: string): Promise<ReminderShare[]> {
-  const shares = await loadShares();
-  return shares.filter((s) => s.type === "reminder" && (s as ReminderShare).reminderId === reminderId) as ReminderShare[];
+  const shares = await prisma.share.findMany({
+    where: {
+      reminderId,
+      type: "reminder",
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return shares.map(share => ({
+    id: share.id,
+    reminderId: share.reminderId || "",
+    ownerId: share.ownerId,
+    sharedWithId: share.sharedWithId,
+    permission: share.permission as "read" | "write",
+    createdAt: share.createdAt.getTime(),
+    type: "reminder" as ShareType,
+  })) as ReminderShare[];
 }
 
 function isNoteShare(s: any): s is NoteShare {
@@ -185,13 +400,16 @@ export async function canUserAccessNote(
   userId: string,
   noteId: string
 ): Promise<{ canAccess: boolean; permission?: "read" | "write" }> {
-  const shares = await loadShares();
-  const share = shares.find(
-    (s) => isNoteShare(s) && s.noteId === noteId && s.sharedWithId === userId
-  );
+  const share = await prisma.share.findFirst({
+    where: {
+      noteId,
+      sharedWithId: userId,
+      type: "note",
+    },
+  });
 
   if (share) {
-    return { canAccess: true, permission: share.permission };
+    return { canAccess: true, permission: share.permission as "read" | "write" };
   }
   return { canAccess: false };
 }
@@ -206,50 +424,84 @@ export async function createPublicShare(
   ownerId: string,
   expiresInDays?: number
 ): Promise<PublicShare> {
-  const publicShares = await loadPublicShares();
-  
   // Vérifier si un partage public existe déjà pour cette note
-  const existing = publicShares.find((s) => s.noteId === noteId && s.ownerId === ownerId);
+  const existing = await prisma.publicShare.findFirst({
+    where: {
+      noteId,
+      ownerId,
+    },
+  });
+  
   if (existing) {
-    return existing;
+    return {
+      id: existing.id,
+      noteId: existing.noteId,
+      ownerId: existing.ownerId,
+      shareToken: existing.shareToken,
+      createdAt: existing.createdAt.getTime(),
+      expiresAt: existing.expiresAt ? existing.expiresAt.getTime() : undefined,
+    };
   }
 
-  const share: PublicShare = {
-    id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-    noteId,
-    ownerId,
-    shareToken: generateShareToken(),
-    createdAt: Date.now(),
-    expiresAt: expiresInDays ? Date.now() + expiresInDays * 24 * 60 * 60 * 1000 : undefined,
+  const share = await prisma.publicShare.create({
+    data: {
+      noteId,
+      ownerId,
+      shareToken: generateShareToken(),
+      expiresAt: expiresInDays ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000) : null,
+    },
+  });
+  
+  return {
+    id: share.id,
+    noteId: share.noteId,
+    ownerId: share.ownerId,
+    shareToken: share.shareToken,
+    createdAt: share.createdAt.getTime(),
+    expiresAt: share.expiresAt ? share.expiresAt.getTime() : undefined,
   };
-
-  publicShares.push(share);
-  await savePublicShares(publicShares);
-  return share;
 }
 
 export async function getPublicShareByToken(token: string): Promise<PublicShare | null> {
-  const publicShares = await loadPublicShares();
-  const share = publicShares.find((s) => s.shareToken === token);
+  const share = await prisma.publicShare.findUnique({
+    where: { shareToken: token },
+  });
   
   if (!share) return null;
   
   // Vérifier l'expiration
-  if (share.expiresAt && share.expiresAt < Date.now()) {
+  if (share.expiresAt && share.expiresAt.getTime() < Date.now()) {
     return null;
   }
   
-  return share;
+  return {
+    id: share.id,
+    noteId: share.noteId,
+    ownerId: share.ownerId,
+    shareToken: share.shareToken,
+    createdAt: share.createdAt.getTime(),
+    expiresAt: share.expiresAt ? share.expiresAt.getTime() : undefined,
+  };
 }
 
 export async function deletePublicShare(shareId: string): Promise<void> {
-  const publicShares = await loadPublicShares();
-  const filtered = publicShares.filter((s) => s.id !== shareId);
-  await savePublicShares(filtered);
+  await prisma.publicShare.delete({
+    where: { id: shareId },
+  });
 }
 
 export async function getPublicSharesByNote(noteId: string): Promise<PublicShare[]> {
-  const publicShares = await loadPublicShares();
-  return publicShares.filter((s) => s.noteId === noteId);
+  const publicShares = await prisma.publicShare.findMany({
+    where: { noteId },
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return publicShares.map(share => ({
+    id: share.id,
+    noteId: share.noteId,
+    ownerId: share.ownerId,
+    shareToken: share.shareToken,
+    createdAt: share.createdAt.getTime(),
+    expiresAt: share.expiresAt ? share.expiresAt.getTime() : undefined,
+  }));
 }
-

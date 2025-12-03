@@ -1,29 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getSession, parseCookies } from "@/lib/auth";
-import { readJson, writeJson } from "@/lib/db";
+import { getNoteById, updateNote, deleteNote, type NoteCategory } from "@/lib/notes";
 
-type NoteCategory = "business" | "perso" | "sport" | "clients" | "urgent" | "autres";
-
-type NoteRecord = {
-  id: string;
-  userId: string;
-  title: string;
-  text: string;
-  category: NoteCategory;
-  createdAt: number;
-};
-
-const NOTES_FILE = "notes.json";
 const COOKIE_NAME = "mindlyst_session";
 const ALLOWED_CATEGORIES: NoteCategory[] = ["business", "perso", "sport", "clients", "urgent", "autres"];
-
-async function loadNotes(): Promise<NoteRecord[]> {
-  return readJson<NoteRecord[]>(NOTES_FILE, []);
-}
-
-async function saveNotes(notes: NoteRecord[]) {
-  await writeJson(NOTES_FILE, notes);
-}
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const cookies = parseCookies(req);
@@ -53,35 +33,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Catégorie invalide" });
     }
 
-    const notes = await loadNotes();
-    const noteIndex = notes.findIndex(note => note.id === id && note.userId === session.userId);
-    if (noteIndex === -1) {
+    const note = await updateNote(id, session.userId, { title, text, category });
+    if (!note) {
       return res.status(404).json({ error: "Note introuvable" });
     }
 
-    notes[noteIndex] = {
-      ...notes[noteIndex],
-      title: title.trim(),
-      text: text.trim(),
-      category
-    };
-    await saveNotes(notes);
-    return res.status(200).json({ note: notes[noteIndex] });
+    return res.status(200).json({ note });
   }
 
   if (req.method === "DELETE") {
-    const notes = await loadNotes();
-    const noteIndex = notes.findIndex(note => note.id === id && note.userId === session.userId);
-    if (noteIndex === -1) {
+    const deleted = await deleteNote(id, session.userId);
+    if (!deleted) {
       return res.status(404).json({ error: "Note introuvable" });
     }
 
-    const [removed] = notes.splice(noteIndex, 1);
-    await saveNotes(notes);
-    return res.status(200).json({ note: removed });
+    const note = await getNoteById(id);
+    return res.status(200).json({ note: note || { id } });
   }
 
   res.setHeader("Allow", "PUT, DELETE");
   return res.status(405).json({ error: "Méthode non autorisée" });
 }
-

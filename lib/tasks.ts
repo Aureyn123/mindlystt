@@ -1,5 +1,5 @@
 // Gestion des tâches (todos)
-import { readJson, writeJson } from "./db";
+import { prisma } from "./prisma";
 
 export type TaskStatus = "pending" | "completed" | "cancelled";
 
@@ -21,19 +21,32 @@ export type Task = {
   updatedAt: number;
 };
 
-const TASKS_FILE = "tasks.json";
-
-async function loadTasks(): Promise<Task[]> {
-  return readJson<Task[]>(TASKS_FILE, []);
-}
-
-async function saveTasks(tasks: Task[]): Promise<void> {
-  await writeJson(TASKS_FILE, tasks);
-}
-
 export async function getUserTasks(userId: string): Promise<Task[]> {
-  const tasks = await loadTasks();
-  return tasks.filter((t) => t.userId === userId);
+  const tasks = await prisma.task.findMany({
+    where: { userId },
+    include: {
+      subTasks: {
+        orderBy: { createdAt: "asc" },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return tasks.map(task => ({
+    id: task.id,
+    userId: task.userId,
+    title: task.title,
+    description: task.description || undefined,
+    status: task.status as TaskStatus,
+    subTasks: task.subTasks.map(st => ({
+      id: st.id,
+      text: st.text,
+      completed: st.completed,
+      createdAt: st.createdAt.getTime(),
+    })),
+    createdAt: task.createdAt.getTime(),
+    updatedAt: task.updatedAt.getTime(),
+  }));
 }
 
 export async function createTask(
@@ -42,27 +55,41 @@ export async function createTask(
   description?: string,
   subTasks?: string[]
 ): Promise<Task> {
-  const tasks = await loadTasks();
-  const newTask: Task = {
-    id: crypto.randomUUID(),
-    userId,
-    title: title.trim(),
-    description: description?.trim(),
-    status: "pending",
-    subTasks: subTasks
-      ? subTasks.map((text) => ({
-          id: crypto.randomUUID(),
-          text: text.trim(),
-          completed: false,
-          createdAt: Date.now(),
-        }))
-      : [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+  const task = await prisma.task.create({
+    data: {
+      userId,
+      title: title.trim(),
+      description: description?.trim() || null,
+      status: "pending",
+      subTasks: {
+        create: subTasks
+          ? subTasks.map((text) => ({
+              text: text.trim(),
+              completed: false,
+            }))
+          : [],
+      },
+    },
+    include: {
+      subTasks: true,
+    },
+  });
+  
+  return {
+    id: task.id,
+    userId: task.userId,
+    title: task.title,
+    description: task.description || undefined,
+    status: task.status as TaskStatus,
+    subTasks: task.subTasks.map(st => ({
+      id: st.id,
+      text: st.text,
+      completed: st.completed,
+      createdAt: st.createdAt.getTime(),
+    })),
+    createdAt: task.createdAt.getTime(),
+    updatedAt: task.updatedAt.getTime(),
   };
-  tasks.push(newTask);
-  await saveTasks(tasks);
-  return newTask;
 }
 
 export async function updateTaskStatus(
@@ -70,15 +97,42 @@ export async function updateTaskStatus(
   userId: string,
   status: TaskStatus
 ): Promise<Task | null> {
-  const tasks = await loadTasks();
-  const task = tasks.find((t) => t.id === taskId && t.userId === userId);
+  const task = await prisma.task.findFirst({
+    where: {
+      id: taskId,
+      userId,
+    },
+  });
+  
   if (!task) {
     return null;
   }
-  task.status = status;
-  task.updatedAt = Date.now();
-  await saveTasks(tasks);
-  return task;
+  
+  const updated = await prisma.task.update({
+    where: { id: taskId },
+    data: { status },
+    include: {
+      subTasks: {
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+  
+  return {
+    id: updated.id,
+    userId: updated.userId,
+    title: updated.title,
+    description: updated.description || undefined,
+    status: updated.status as TaskStatus,
+    subTasks: updated.subTasks.map(st => ({
+      id: st.id,
+      text: st.text,
+      completed: st.completed,
+      createdAt: st.createdAt.getTime(),
+    })),
+    createdAt: updated.createdAt.getTime(),
+    updatedAt: updated.updatedAt.getTime(),
+  };
 }
 
 export async function updateTask(
@@ -86,31 +140,56 @@ export async function updateTask(
   userId: string,
   updates: { title?: string; description?: string }
 ): Promise<Task | null> {
-  const tasks = await loadTasks();
-  const task = tasks.find((t) => t.id === taskId && t.userId === userId);
+  const task = await prisma.task.findFirst({
+    where: {
+      id: taskId,
+      userId,
+    },
+  });
+  
   if (!task) {
     return null;
   }
-  if (updates.title !== undefined) {
-    task.title = updates.title.trim();
-  }
-  if (updates.description !== undefined) {
-    task.description = updates.description?.trim();
-  }
-  task.updatedAt = Date.now();
-  await saveTasks(tasks);
-  return task;
+  
+  const updated = await prisma.task.update({
+    where: { id: taskId },
+    data: {
+      ...(updates.title !== undefined && { title: updates.title.trim() }),
+      ...(updates.description !== undefined && { description: updates.description?.trim() || null }),
+    },
+    include: {
+      subTasks: {
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+  
+  return {
+    id: updated.id,
+    userId: updated.userId,
+    title: updated.title,
+    description: updated.description || undefined,
+    status: updated.status as TaskStatus,
+    subTasks: updated.subTasks.map(st => ({
+      id: st.id,
+      text: st.text,
+      completed: st.completed,
+      createdAt: st.createdAt.getTime(),
+    })),
+    createdAt: updated.createdAt.getTime(),
+    updatedAt: updated.updatedAt.getTime(),
+  };
 }
 
 export async function deleteTask(taskId: string, userId: string): Promise<boolean> {
-  const tasks = await loadTasks();
-  const initialLength = tasks.length;
-  const filtered = tasks.filter((t) => !(t.id === taskId && t.userId === userId));
-  if (filtered.length === initialLength) {
-    return false;
-  }
-  await saveTasks(filtered);
-  return true;
+  const deleted = await prisma.task.deleteMany({
+    where: {
+      id: taskId,
+      userId,
+    },
+  });
+  
+  return deleted.count > 0;
 }
 
 export function calculateTaskCompletionRate(task: Task): number {
@@ -134,34 +213,76 @@ export function calculateCompletionRate(tasks: Task[]): number {
 }
 
 export async function addSubTask(taskId: string, userId: string, subTaskText: string): Promise<Task | null> {
-  const tasks = await loadTasks();
-  const task = tasks.find((t) => t.id === taskId && t.userId === userId);
+  const task = await prisma.task.findFirst({
+    where: {
+      id: taskId,
+      userId,
+    },
+    include: {
+      subTasks: true,
+    },
+  });
+  
   if (!task) {
     return null;
   }
   
-  const newSubTask: SubTask = {
-    id: crypto.randomUUID(),
-    text: subTaskText.trim(),
-    completed: false,
-    createdAt: Date.now(),
-  };
-  
-  task.subTasks.push(newSubTask);
-  task.updatedAt = Date.now();
+  const newSubTask = await prisma.subTask.create({
+    data: {
+      taskId,
+      text: subTaskText.trim(),
+      completed: false,
+    },
+  });
   
   // Mettre à jour le statut principal si toutes les sous-tâches sont complétées
-  if (task.subTasks.length > 0 && task.subTasks.every((st) => st.completed)) {
-    task.status = "completed";
+  const allCompleted = task.subTasks.every((st) => st.completed) && newSubTask.completed;
+  if (task.subTasks.length > 0 && allCompleted) {
+    await prisma.task.update({
+      where: { id: taskId },
+      data: { status: "completed" },
+    });
   }
   
-  await saveTasks(tasks);
-  return task;
+  const updated = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: {
+      subTasks: {
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+  
+  if (!updated) return null;
+  
+  return {
+    id: updated.id,
+    userId: updated.userId,
+    title: updated.title,
+    description: updated.description || undefined,
+    status: updated.status as TaskStatus,
+    subTasks: updated.subTasks.map(st => ({
+      id: st.id,
+      text: st.text,
+      completed: st.completed,
+      createdAt: st.createdAt.getTime(),
+    })),
+    createdAt: updated.createdAt.getTime(),
+    updatedAt: updated.updatedAt.getTime(),
+  };
 }
 
 export async function toggleSubTask(taskId: string, userId: string, subTaskId: string): Promise<Task | null> {
-  const tasks = await loadTasks();
-  const task = tasks.find((t) => t.id === taskId && t.userId === userId);
+  const task = await prisma.task.findFirst({
+    where: {
+      id: taskId,
+      userId,
+    },
+    include: {
+      subTasks: true,
+    },
+  });
+  
   if (!task) {
     return null;
   }
@@ -171,39 +292,118 @@ export async function toggleSubTask(taskId: string, userId: string, subTaskId: s
     return null;
   }
   
-  subTask.completed = !subTask.completed;
-  task.updatedAt = Date.now();
+  const updatedSubTask = await prisma.subTask.update({
+    where: { id: subTaskId },
+    data: { completed: !subTask.completed },
+  });
   
   // Mettre à jour le statut principal
-  if (task.subTasks.length > 0 && task.subTasks.every((st) => st.completed)) {
-    task.status = "completed";
+  const allSubTasks = task.subTasks.map(st => 
+    st.id === subTaskId ? updatedSubTask : st
+  );
+  const allCompleted = allSubTasks.length > 0 && allSubTasks.every((st) => st.completed);
+  
+  if (allCompleted) {
+    await prisma.task.update({
+      where: { id: taskId },
+      data: { status: "completed" },
+    });
   } else if (task.status === "completed") {
-    task.status = "pending";
+    await prisma.task.update({
+      where: { id: taskId },
+      data: { status: "pending" },
+    });
   }
   
-  await saveTasks(tasks);
-  return task;
+  const updated = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: {
+      subTasks: {
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+  
+  if (!updated) return null;
+  
+  return {
+    id: updated.id,
+    userId: updated.userId,
+    title: updated.title,
+    description: updated.description || undefined,
+    status: updated.status as TaskStatus,
+    subTasks: updated.subTasks.map(st => ({
+      id: st.id,
+      text: st.text,
+      completed: st.completed,
+      createdAt: st.createdAt.getTime(),
+    })),
+    createdAt: updated.createdAt.getTime(),
+    updatedAt: updated.updatedAt.getTime(),
+  };
 }
 
 export async function deleteSubTask(taskId: string, userId: string, subTaskId: string): Promise<Task | null> {
-  const tasks = await loadTasks();
-  const task = tasks.find((t) => t.id === taskId && t.userId === userId);
+  const task = await prisma.task.findFirst({
+    where: {
+      id: taskId,
+      userId,
+    },
+    include: {
+      subTasks: true,
+    },
+  });
+  
   if (!task) {
     return null;
   }
   
-  task.subTasks = task.subTasks.filter((st) => st.id !== subTaskId);
-  task.updatedAt = Date.now();
+  await prisma.subTask.delete({
+    where: { id: subTaskId },
+  });
   
   // Mettre à jour le statut principal
-  if (task.subTasks.length > 0 && task.subTasks.every((st) => st.completed)) {
-    task.status = "completed";
-  } else if (task.status === "completed") {
-    task.status = "pending";
+  const remainingSubTasks = task.subTasks.filter((st) => st.id !== subTaskId);
+  const allCompleted = remainingSubTasks.length > 0 && remainingSubTasks.every((st) => st.completed);
+  
+  if (allCompleted) {
+    await prisma.task.update({
+      where: { id: taskId },
+      data: { status: "completed" },
+    });
+  } else if (task.status === "completed" && remainingSubTasks.length > 0) {
+    await prisma.task.update({
+      where: { id: taskId },
+      data: { status: "pending" },
+    });
   }
   
-  await saveTasks(tasks);
-  return task;
+  const updated = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: {
+      subTasks: {
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+  
+  if (!updated) return null;
+  
+  return {
+    id: updated.id,
+    userId: updated.userId,
+    title: updated.title,
+    description: updated.description || undefined,
+    status: updated.status as TaskStatus,
+    subTasks: updated.subTasks.map(st => ({
+      id: st.id,
+      text: st.text,
+      completed: st.completed,
+      createdAt: st.createdAt.getTime(),
+    })),
+    createdAt: updated.createdAt.getTime(),
+    updatedAt: updated.updatedAt.getTime(),
+  };
 }
 
 export async function updateSubTask(
@@ -212,20 +412,46 @@ export async function updateSubTask(
   subTaskId: string,
   newText: string
 ): Promise<Task | null> {
-  const tasks = await loadTasks();
-  const task = tasks.find((t) => t.id === taskId && t.userId === userId);
+  const task = await prisma.task.findFirst({
+    where: {
+      id: taskId,
+      userId,
+    },
+  });
+  
   if (!task) {
     return null;
   }
   
-  const subTask = task.subTasks.find((st) => st.id === subTaskId);
-  if (!subTask) {
-    return null;
-  }
+  await prisma.subTask.update({
+    where: { id: subTaskId },
+    data: { text: newText.trim() },
+  });
   
-  subTask.text = newText.trim();
-  task.updatedAt = Date.now();
-  await saveTasks(tasks);
-  return task;
+  const updated = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: {
+      subTasks: {
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+  
+  if (!updated) return null;
+  
+  return {
+    id: updated.id,
+    userId: updated.userId,
+    title: updated.title,
+    description: updated.description || undefined,
+    status: updated.status as TaskStatus,
+    subTasks: updated.subTasks.map(st => ({
+      id: st.id,
+      text: st.text,
+      completed: st.completed,
+      createdAt: st.createdAt.getTime(),
+    })),
+    createdAt: updated.createdAt.getTime(),
+    updatedAt: updated.updatedAt.getTime(),
+  };
 }
-

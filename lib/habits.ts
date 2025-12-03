@@ -1,5 +1,5 @@
 // Gestion des habitudes quotidiennes
-import { readJson, writeJson } from "./db";
+import { prisma } from "./prisma";
 
 export type HabitStatus = "completed" | "skipped" | "pending";
 
@@ -20,16 +20,6 @@ export type Habit = {
   updatedAt: number;
 };
 
-const HABITS_FILE = "habits.json";
-
-async function loadHabits(): Promise<Habit[]> {
-  return readJson<Habit[]>(HABITS_FILE, []);
-}
-
-async function saveHabits(habits: Habit[]): Promise<void> {
-  await writeJson(HABITS_FILE, habits);
-}
-
 // Obtenir la date du jour au format YYYY-MM-DD
 export function getTodayDateString(): string {
   const now = new Date();
@@ -45,7 +35,12 @@ export function getYesterdayDateString(): string {
 
 // Réinitialiser toutes les habitudes pour le nouveau jour
 export async function resetDailyHabits(): Promise<void> {
-  const habits = await loadHabits();
+  const habits = await prisma.habit.findMany({
+    include: {
+      dailyRecords: true,
+    },
+  });
+  
   const today = getTodayDateString();
   
   for (const habit of habits) {
@@ -53,65 +48,128 @@ export async function resetDailyHabits(): Promise<void> {
     const todayRecord = habit.dailyRecords.find((r) => r.date === today);
     if (!todayRecord) {
       // Ajouter un enregistrement "pending" pour aujourd'hui
-      habit.dailyRecords.push({
-        date: today,
-        status: "pending",
+      await prisma.dailyHabitRecord.create({
+        data: {
+          habitId: habit.id,
+          date: today,
+          status: "pending",
+        },
       });
-      habit.updatedAt = Date.now();
     }
   }
-  
-  await saveHabits(habits);
 }
 
 export async function getUserHabits(userId: string): Promise<Habit[]> {
-  const habits = await loadHabits();
-  // S'assurer que chaque habitude a un enregistrement pour aujourd'hui
-  const today = getTodayDateString();
-  let needsSave = false;
+  const habits = await prisma.habit.findMany({
+    where: { userId },
+    include: {
+      dailyRecords: {
+        orderBy: { date: "desc" },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
   
-  for (const habit of habits.filter((h) => h.userId === userId)) {
+  const today = getTodayDateString();
+  const habitsWithRecords: Habit[] = [];
+  
+  for (const habit of habits) {
     const todayRecord = habit.dailyRecords.find((r) => r.date === today);
+    
     if (!todayRecord) {
-      habit.dailyRecords.push({
-        date: today,
-        status: "pending",
+      // Créer un enregistrement pour aujourd'hui
+      await prisma.dailyHabitRecord.create({
+        data: {
+          habitId: habit.id,
+          date: today,
+          status: "pending",
+        },
       });
-      habit.updatedAt = Date.now();
-      needsSave = true;
+      
+      // Recharger l'habitude avec le nouveau record
+      const updated = await prisma.habit.findUnique({
+        where: { id: habit.id },
+        include: {
+          dailyRecords: {
+            orderBy: { date: "desc" },
+          },
+        },
+      });
+      
+      if (updated) {
+        habitsWithRecords.push({
+          id: updated.id,
+          userId: updated.userId,
+          name: updated.name,
+          description: updated.description || undefined,
+          color: updated.color || undefined,
+          dailyRecords: updated.dailyRecords.map(record => ({
+            date: record.date,
+            status: record.status as HabitStatus,
+            completedAt: record.completedAt ? record.completedAt.getTime() : undefined,
+          })),
+          createdAt: updated.createdAt.getTime(),
+          updatedAt: updated.updatedAt.getTime(),
+        });
+      }
+    } else {
+      habitsWithRecords.push({
+        id: habit.id,
+        userId: habit.userId,
+        name: habit.name,
+        description: habit.description || undefined,
+        color: habit.color || undefined,
+        dailyRecords: habit.dailyRecords.map(record => ({
+          date: record.date,
+          status: record.status as HabitStatus,
+          completedAt: record.completedAt ? record.completedAt.getTime() : undefined,
+        })),
+        createdAt: habit.createdAt.getTime(),
+        updatedAt: habit.updatedAt.getTime(),
+      });
     }
   }
   
-  if (needsSave) {
-    await saveHabits(habits);
-  }
-  
-  return habits.filter((h) => h.userId === userId);
+  return habitsWithRecords;
 }
 
 export async function createHabit(userId: string, name: string, description?: string, color?: string): Promise<Habit> {
-  const habits = await loadHabits();
   const today = getTodayDateString();
   
-  const newHabit: Habit = {
-    id: crypto.randomUUID(),
-    userId,
-    name: name.trim(),
-    description: description?.trim(),
-    color: color || "blue",
-    dailyRecords: [
-      {
-        date: today,
-        status: "pending",
+  const habit = await prisma.habit.create({
+    data: {
+      userId,
+      name: name.trim(),
+      description: description?.trim() || null,
+      color: color || "blue",
+      dailyRecords: {
+        create: {
+          date: today,
+          status: "pending",
+        },
       },
-    ],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  };
+    },
+    include: {
+      dailyRecords: {
+        orderBy: { date: "desc" },
+      },
+    },
+  });
   
-  habits.push(newHabit);
-  await saveHabits(habits);
-  return newHabit;
+  return {
+    id: habit.id,
+    userId: habit.userId,
+    name: habit.name,
+    description: habit.description || undefined,
+    color: habit.color || undefined,
+    dailyRecords: habit.dailyRecords.map(record => ({
+      date: record.date,
+      status: record.status as HabitStatus,
+      completedAt: record.completedAt ? record.completedAt.getTime() : undefined,
+    })),
+    createdAt: habit.createdAt.getTime(),
+    updatedAt: habit.updatedAt.getTime(),
+  };
 }
 
 export async function updateHabitStatus(
@@ -120,31 +178,62 @@ export async function updateHabitStatus(
   date: string,
   status: HabitStatus
 ): Promise<Habit | null> {
-  const habits = await loadHabits();
-  const habit = habits.find((h) => h.id === habitId && h.userId === userId);
+  const habit = await prisma.habit.findFirst({
+    where: {
+      id: habitId,
+      userId,
+    },
+  });
+  
   if (!habit) {
     return null;
   }
   
-  const record = habit.dailyRecords.find((r) => r.date === date);
-  if (record) {
-    record.status = status;
-    if (status === "completed") {
-      record.completedAt = Date.now();
-    } else {
-      delete record.completedAt;
-    }
-  } else {
-    habit.dailyRecords.push({
+  // Mettre à jour ou créer le record
+  await prisma.dailyHabitRecord.upsert({
+    where: {
+      habitId_date: {
+        habitId,
+        date,
+      },
+    },
+    update: {
+      status,
+      completedAt: status === "completed" ? new Date() : null,
+    },
+    create: {
+      habitId,
       date,
       status,
-      completedAt: status === "completed" ? Date.now() : undefined,
-    });
-  }
+      completedAt: status === "completed" ? new Date() : null,
+    },
+  });
   
-  habit.updatedAt = Date.now();
-  await saveHabits(habits);
-  return habit;
+  const updated = await prisma.habit.findUnique({
+    where: { id: habitId },
+    include: {
+      dailyRecords: {
+        orderBy: { date: "desc" },
+      },
+    },
+  });
+  
+  if (!updated) return null;
+  
+  return {
+    id: updated.id,
+    userId: updated.userId,
+    name: updated.name,
+    description: updated.description || undefined,
+    color: updated.color || undefined,
+    dailyRecords: updated.dailyRecords.map(record => ({
+      date: record.date,
+      status: record.status as HabitStatus,
+      completedAt: record.completedAt ? record.completedAt.getTime() : undefined,
+    })),
+    createdAt: updated.createdAt.getTime(),
+    updatedAt: updated.updatedAt.getTime(),
+  };
 }
 
 export async function updateHabit(
@@ -152,36 +241,56 @@ export async function updateHabit(
   userId: string,
   updates: { name?: string; description?: string; color?: string }
 ): Promise<Habit | null> {
-  const habits = await loadHabits();
-  const habit = habits.find((h) => h.id === habitId && h.userId === userId);
+  const habit = await prisma.habit.findFirst({
+    where: {
+      id: habitId,
+      userId,
+    },
+  });
+  
   if (!habit) {
     return null;
   }
   
-  if (updates.name !== undefined) {
-    habit.name = updates.name.trim();
-  }
-  if (updates.description !== undefined) {
-    habit.description = updates.description?.trim();
-  }
-  if (updates.color !== undefined) {
-    habit.color = updates.color;
-  }
+  const updated = await prisma.habit.update({
+    where: { id: habitId },
+    data: {
+      ...(updates.name !== undefined && { name: updates.name.trim() }),
+      ...(updates.description !== undefined && { description: updates.description?.trim() || null }),
+      ...(updates.color !== undefined && { color: updates.color }),
+    },
+    include: {
+      dailyRecords: {
+        orderBy: { date: "desc" },
+      },
+    },
+  });
   
-  habit.updatedAt = Date.now();
-  await saveHabits(habits);
-  return habit;
+  return {
+    id: updated.id,
+    userId: updated.userId,
+    name: updated.name,
+    description: updated.description || undefined,
+    color: updated.color || undefined,
+    dailyRecords: updated.dailyRecords.map(record => ({
+      date: record.date,
+      status: record.status as HabitStatus,
+      completedAt: record.completedAt ? record.completedAt.getTime() : undefined,
+    })),
+    createdAt: updated.createdAt.getTime(),
+    updatedAt: updated.updatedAt.getTime(),
+  };
 }
 
 export async function deleteHabit(habitId: string, userId: string): Promise<boolean> {
-  const habits = await loadHabits();
-  const initialLength = habits.length;
-  const filtered = habits.filter((h) => !(h.id === habitId && h.userId === userId));
-  if (filtered.length === initialLength) {
-    return false;
-  }
-  await saveHabits(filtered);
-  return true;
+  const deleted = await prisma.habit.deleteMany({
+    where: {
+      id: habitId,
+      userId,
+    },
+  });
+  
+  return deleted.count > 0;
 }
 
 // Calculer le pourcentage de réussite pour une semaine
@@ -235,4 +344,3 @@ export function getWeeklyStats(habits: Habit[]): {
     habitsStats,
   };
 }
-

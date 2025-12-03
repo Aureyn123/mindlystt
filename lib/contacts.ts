@@ -1,6 +1,6 @@
 // Gestion des contacts
 import crypto from "crypto";
-import { readJson, writeJson } from "./db";
+import { prisma } from "./prisma";
 import { readUsers } from "./auth";
 
 export type Contact = {
@@ -22,28 +22,20 @@ export type ContactRequest = {
   createdAt: number;
 };
 
-const CONTACTS_FILE = "contacts.json";
-const CONTACT_REQUESTS_FILE = "contact-requests.json";
-
-async function loadContacts(): Promise<Contact[]> {
-  return readJson<Contact[]>(CONTACTS_FILE, []);
-}
-
-async function saveContacts(contacts: Contact[]): Promise<void> {
-  await writeJson(CONTACTS_FILE, contacts);
-}
-
-async function loadContactRequests(): Promise<ContactRequest[]> {
-  return readJson<ContactRequest[]>(CONTACT_REQUESTS_FILE, []);
-}
-
-async function saveContactRequests(requests: ContactRequest[]): Promise<void> {
-  await writeJson(CONTACT_REQUESTS_FILE, requests);
-}
-
 export async function getUserContacts(userId: string): Promise<Contact[]> {
-  const contacts = await loadContacts();
-  return contacts.filter((c) => c.userId === userId);
+  const contacts = await prisma.contact.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return contacts.map(contact => ({
+    id: contact.id,
+    userId: contact.userId,
+    contactUserId: contact.contactUserId,
+    contactUsername: contact.contactUsername,
+    contactEmail: contact.contactEmail,
+    createdAt: contact.createdAt.getTime(),
+  }));
 }
 
 export async function createContactRequest(requesterId: string, recipientId: string): Promise<ContactRequest> {
@@ -53,181 +45,262 @@ export async function createContactRequest(requesterId: string, recipientId: str
   }
 
   // Vérifier que le contact n'existe pas déjà
-  const contacts = await loadContacts();
-  const existingContact = contacts.find(
-    (c) => (c.userId === requesterId && c.contactUserId === recipientId) ||
-           (c.userId === recipientId && c.contactUserId === requesterId)
-  );
+  const existingContact = await prisma.contact.findFirst({
+    where: {
+      OR: [
+        { userId: requesterId, contactUserId: recipientId },
+        { userId: recipientId, contactUserId: requesterId },
+      ],
+    },
+  });
+  
   if (existingContact) {
     throw new Error("Ce contact existe déjà");
   }
 
   // Vérifier qu'il n'y a pas déjà une demande en attente
-  const requests = await loadContactRequests();
-  const existingRequest = requests.find(
-    (r) => r.requesterId === requesterId && r.recipientId === recipientId && r.status === "pending"
-  );
+  const existingRequest = await prisma.contactRequest.findFirst({
+    where: {
+      requesterId,
+      recipientId,
+      status: "pending",
+    },
+  });
+  
   if (existingRequest) {
     throw new Error("Une demande est déjà en attente");
   }
 
   // Récupérer les infos du demandeur
-  const users = await readUsers();
-  const requesterUser = users.find((u) => u.id === requesterId);
+  const requesterUser = await prisma.user.findUnique({
+    where: { id: requesterId },
+  });
+  
   if (!requesterUser) {
     throw new Error("Utilisateur non trouvé");
   }
 
-  const newRequest: ContactRequest = {
-    id: crypto.randomUUID(),
-    requesterId,
-    requesterUsername: requesterUser.username,
-    requesterEmail: requesterUser.email,
-    recipientId,
-    status: "pending",
-    createdAt: Date.now(),
-  };
+  const newRequest = await prisma.contactRequest.create({
+    data: {
+      requesterId,
+      requesterUsername: requesterUser.username,
+      requesterEmail: requesterUser.email,
+      recipientId,
+      status: "pending",
+    },
+  });
 
-  requests.push(newRequest);
-  await saveContactRequests(requests);
-  return newRequest;
+  return {
+    id: newRequest.id,
+    requesterId: newRequest.requesterId,
+    requesterUsername: newRequest.requesterUsername,
+    requesterEmail: newRequest.requesterEmail,
+    recipientId: newRequest.recipientId,
+    status: newRequest.status as "pending" | "accepted" | "rejected",
+    createdAt: newRequest.createdAt.getTime(),
+  };
 }
 
 export async function acceptContactRequest(requestId: string, userId: string): Promise<Contact> {
-  const requests = await loadContactRequests();
-  const request = requests.find((r) => r.id === requestId && r.recipientId === userId && r.status === "pending");
+  const request = await prisma.contactRequest.findFirst({
+    where: {
+      id: requestId,
+      recipientId: userId,
+      status: "pending",
+    },
+  });
   
   if (!request) {
     throw new Error("Demande non trouvée ou déjà traitée");
   }
 
   // Marquer la demande comme acceptée
-  request.status = "accepted";
-  await saveContactRequests(requests);
+  await prisma.contactRequest.update({
+    where: { id: requestId },
+    data: { status: "accepted" },
+  });
 
-  // Créer les contacts dans les deux sens (relation bidirectionnelle)
-  const contacts = await loadContacts();
-  const users = await readUsers();
+  // Récupérer les utilisateurs
+  const requesterUser = await prisma.user.findUnique({
+    where: { id: request.requesterId },
+  });
   
-  const requesterUser = users.find((u) => u.id === request.requesterId);
-  const recipientUser = users.find((u) => u.id === request.recipientId);
+  const recipientUser = await prisma.user.findUnique({
+    where: { id: request.recipientId },
+  });
   
   if (!requesterUser || !recipientUser) {
     throw new Error("Utilisateur non trouvé");
   }
 
+  // Créer les contacts dans les deux sens (relation bidirectionnelle)
   // Contact 1 : requester -> recipient
-  const contact1: Contact = {
-    id: crypto.randomUUID(),
-    userId: request.requesterId,
-    contactUserId: request.recipientId,
-    contactUsername: recipientUser.username,
-    contactEmail: recipientUser.email,
-    createdAt: Date.now(),
-  };
+  await prisma.contact.create({
+    data: {
+      userId: request.requesterId,
+      contactUserId: request.recipientId,
+      contactUsername: recipientUser.username,
+      contactEmail: recipientUser.email,
+    },
+  });
 
   // Contact 2 : recipient -> requester
-  const contact2: Contact = {
-    id: crypto.randomUUID(),
-    userId: request.recipientId,
-    contactUserId: request.requesterId,
-    contactUsername: requesterUser.username,
-    contactEmail: requesterUser.email,
-    createdAt: Date.now(),
-  };
+  const contact2 = await prisma.contact.create({
+    data: {
+      userId: request.recipientId,
+      contactUserId: request.requesterId,
+      contactUsername: requesterUser.username,
+      contactEmail: requesterUser.email,
+    },
+  });
 
-  contacts.push(contact1, contact2);
-  await saveContacts(contacts);
-  
-  return contact2; // Retourner le contact pour l'utilisateur qui a accepté
+  return {
+    id: contact2.id,
+    userId: contact2.userId,
+    contactUserId: contact2.contactUserId,
+    contactUsername: contact2.contactUsername,
+    contactEmail: contact2.contactEmail,
+    createdAt: contact2.createdAt.getTime(),
+  };
 }
 
 export async function rejectContactRequest(requestId: string, userId: string): Promise<void> {
-  const requests = await loadContactRequests();
-  const request = requests.find((r) => r.id === requestId && r.recipientId === userId && r.status === "pending");
+  const request = await prisma.contactRequest.findFirst({
+    where: {
+      id: requestId,
+      recipientId: userId,
+      status: "pending",
+    },
+  });
   
   if (!request) {
     throw new Error("Demande non trouvée ou déjà traitée");
   }
 
-  request.status = "rejected";
-  await saveContactRequests(requests);
+  await prisma.contactRequest.update({
+    where: { id: requestId },
+    data: { status: "rejected" },
+  });
 }
 
 export async function getPendingContactRequests(userId: string): Promise<ContactRequest[]> {
-  const requests = await loadContactRequests();
-  return requests.filter((r) => r.recipientId === userId && r.status === "pending");
+  const requests = await prisma.contactRequest.findMany({
+    where: {
+      recipientId: userId,
+      status: "pending",
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  
+  return requests.map(request => ({
+    id: request.id,
+    requesterId: request.requesterId,
+    requesterUsername: request.requesterUsername,
+    requesterEmail: request.requesterEmail,
+    recipientId: request.recipientId,
+    status: request.status as "pending" | "accepted" | "rejected",
+    createdAt: request.createdAt.getTime(),
+  }));
 }
 
 export async function addContact(userId: string, contactUserId: string): Promise<Contact | null> {
   // Cette fonction est maintenant obsolète, on utilise createContactRequest à la place
   // Mais on la garde pour la rétrocompatibilité
-  const contacts = await loadContacts();
-  const existing = contacts.find(
-    (c) => c.userId === userId && c.contactUserId === contactUserId
-  );
+  
+  const existing = await prisma.contact.findFirst({
+    where: {
+      userId,
+      contactUserId,
+    },
+  });
+  
   if (existing) {
-    return existing;
+    return {
+      id: existing.id,
+      userId: existing.userId,
+      contactUserId: existing.contactUserId,
+      contactUsername: existing.contactUsername,
+      contactEmail: existing.contactEmail,
+      createdAt: existing.createdAt.getTime(),
+    };
   }
 
   if (userId === contactUserId) {
     throw new Error("Tu ne peux pas t'ajouter toi-même comme contact");
   }
 
-  const users = await readUsers();
-  const contactUser = users.find((u) => u.id === contactUserId);
+  const contactUser = await prisma.user.findUnique({
+    where: { id: contactUserId },
+  });
+  
   if (!contactUser) {
     throw new Error("Utilisateur non trouvé");
   }
 
-  const newContact: Contact = {
-    id: crypto.randomUUID(),
-    userId,
-    contactUserId,
-    contactUsername: contactUser.username,
-    contactEmail: contactUser.email,
-    createdAt: Date.now(),
-  };
+  const newContact = await prisma.contact.create({
+    data: {
+      userId,
+      contactUserId,
+      contactUsername: contactUser.username,
+      contactEmail: contactUser.email,
+    },
+  });
 
-  contacts.push(newContact);
-  await saveContacts(contacts);
-  return newContact;
+  return {
+    id: newContact.id,
+    userId: newContact.userId,
+    contactUserId: newContact.contactUserId,
+    contactUsername: newContact.contactUsername,
+    contactEmail: newContact.contactEmail,
+    createdAt: newContact.createdAt.getTime(),
+  };
 }
 
 export async function removeContact(userId: string, contactId: string): Promise<boolean> {
-  const contacts = await loadContacts();
-  const initialLength = contacts.length;
-  const filtered = contacts.filter((c) => !(c.id === contactId && c.userId === userId));
-  if (filtered.length === initialLength) {
-    return false;
-  }
-  await saveContacts(filtered);
-  return true;
+  const deleted = await prisma.contact.deleteMany({
+    where: {
+      id: contactId,
+      userId,
+    },
+  });
+  
+  return deleted.count > 0;
 }
 
 export async function findUserByUsername(username: string): Promise<{ id: string; email: string; username: string } | null> {
-  const users = await readUsers();
-  const user = users.find((u) => u.username.toLowerCase() === username.toLowerCase());
-  if (!user) {
-    return null;
-  }
-  return {
-    id: user.id,
-    email: user.email,
-    username: user.username,
-  };
+  const user = await prisma.user.findFirst({
+    where: {
+      username: {
+        equals: username,
+        mode: "insensitive",
+      },
+    },
+    select: {
+      id: true,
+      email: true,
+      username: true,
+    },
+  });
+  
+  return user;
 }
 
 export async function searchUsersByUsername(query: string, excludeUserId: string): Promise<Array<{ id: string; email: string; username: string }>> {
-  const users = await readUsers();
-  const lowerQuery = query.toLowerCase();
-  return users
-    .filter((u) => u.id !== excludeUserId && u.username.toLowerCase().includes(lowerQuery))
-    .map((u) => ({
-      id: u.id,
-      email: u.email,
-      username: u.username,
-    }))
-    .slice(0, 10); // Limiter à 10 résultats
+  const users = await prisma.user.findMany({
+    where: {
+      id: { not: excludeUserId },
+      username: {
+        contains: query,
+        mode: "insensitive",
+      },
+    },
+    select: {
+      id: true,
+      email: true,
+      username: true,
+    },
+    take: 10, // Limiter à 10 résultats
+  });
+  
+  return users;
 }
-

@@ -1,31 +1,10 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { parseCookies, getSession } from "@/lib/auth";
-import { readJson, writeJson } from "@/lib/db";
-import crypto from "crypto";
+import { getUserNotes, createNote, type NoteCategory, type NoteRecord } from "@/lib/notes";
 import type { NoteShare } from "@/lib/shares";
 
-type NoteCategory = "business" | "perso" | "sport" | "clients" | "urgent" | "autres";
-
-type NoteRecord = {
-  id: string;
-  userId: string;
-  title: string;
-  text: string;
-  category: NoteCategory;
-  createdAt: number;
-};
-
-const NOTES_FILE = "notes.json";
 const COOKIE_NAME = "mindlyst_session";
 const ALLOWED_CATEGORIES: NoteCategory[] = ["business", "perso", "sport", "clients", "urgent", "autres"];
-
-async function loadNotes(): Promise<NoteRecord[]> {
-  return readJson<NoteRecord[]>(NOTES_FILE, []);
-}
-
-async function saveNotes(notes: NoteRecord[]) {
-  await writeJson(NOTES_FILE, notes);
-}
 
 async function getAuthenticatedUserId(req: NextApiRequest): Promise<string | null> {
   const cookies = parseCookies(req);
@@ -42,11 +21,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   if (req.method === "GET") {
-    const notes = await loadNotes();
-    const userNotes = notes.filter(note => note.userId === userId).sort((a, b) => b.createdAt - a.createdAt);
+    const userNotes = await getUserNotes(userId);
     
     // Inclure les notes partagées avec l'utilisateur
     const { getSharesForUser } = await import("@/lib/shares");
+    const { getAllNotes } = await import("@/lib/notes");
     const shares = await getSharesForUser(userId);
     const noteShares = shares.filter((share): share is NoteShare => {
       if (share.type === "note" || !share.type) {
@@ -55,7 +34,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return false;
     });
     const sharedNoteIds = new Set(noteShares.map(s => s.noteId));
-    const sharedNotes = notes.filter(note => sharedNoteIds.has(note.id));
+    const allNotesFromDb = await getAllNotes();
+    const sharedNotes = allNotesFromDb.filter(note => sharedNoteIds.has(note.id));
     
     const allNotes = [...userNotes, ...sharedNotes].sort((a, b) => b.createdAt - a.createdAt);
     return res.status(200).json({ notes: allNotes });
@@ -84,17 +64,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    const notes = await loadNotes();
-    const newNote: NoteRecord = {
-      id: crypto.randomUUID(),
-      userId,
-      title: title.trim(),
-      text: text.trim(),
-      category,
-      createdAt: Date.now()
-    };
-    notes.push(newNote);
-    await saveNotes(notes);
+    const newNote = await createNote(userId, title, text, category);
 
     // Détecter les dates dans la note et créer des événements si des intégrations sont actives
     // Uniquement pour les dates "pour bientôt" (dans les 7 prochains jours)

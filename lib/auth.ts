@@ -1,12 +1,13 @@
 import crypto from "crypto";
 import type { NextApiRequest } from "next";
-import { readJson, writeJson } from "./db";
+import { prisma } from "./prisma";
 
 const ITERATIONS = 120000;
 const KEY_LENGTH = 64;
 const DIGEST = "sha512";
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Types conservés pour compatibilité
 export type UserRecord = {
   id: string;
   email: string;
@@ -22,9 +23,6 @@ export type SessionRecord = {
   userId: string;
   expiresAt: number;
 };
-
-const USERS_FILE = "users.json";
-const SESSIONS_FILE = "sessions.json";
 
 export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString("hex");
@@ -56,51 +54,131 @@ export function parseCookies(req: NextApiRequest | { headers: { cookie?: string 
   }, {});
 }
 
+// ============================================
+// Fonctions migrées vers Prisma
+// ============================================
+
 export async function readUsers(): Promise<UserRecord[]> {
-  const users = await readJson<UserRecord[]>(USERS_FILE, []);
-  console.log("USERS LOADED:", users);
-  return users;
+  const users = await prisma.user.findMany({
+    orderBy: { createdAt: "asc" },
+  });
+  
+  // Convertir les types Prisma vers UserRecord
+  return users.map(user => ({
+    id: user.id,
+    email: user.email,
+    username: user.username,
+    passwordHash: user.passwordHash,
+    createdAt: user.createdAt.getTime(),
+    isAdmin: user.isAdmin,
+    customCategories: user.customCategories || undefined,
+  }));
 }
 
 export async function writeUsers(users: UserRecord[]): Promise<void> {
-  await writeJson(USERS_FILE, users);
+  // Cette fonction n'est plus vraiment utilisée car on utilise directement Prisma
+  // Mais on la garde pour compatibilité
+  for (const user of users) {
+    await prisma.user.upsert({
+      where: { id: user.id },
+      update: {
+        email: user.email,
+        username: user.username,
+        passwordHash: user.passwordHash,
+        isAdmin: user.isAdmin || false,
+        customCategories: user.customCategories || null,
+      },
+      create: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        passwordHash: user.passwordHash,
+        isAdmin: user.isAdmin || false,
+        customCategories: user.customCategories || null,
+        createdAt: new Date(user.createdAt),
+      },
+    });
+  }
 }
 
 export async function readSessions(): Promise<SessionRecord[]> {
-  const sessions = await readJson<SessionRecord[]>(SESSIONS_FILE, []);
-  const now = Date.now();
-  const active = sessions.filter(session => session.expiresAt > now);
-  if (active.length !== sessions.length) {
-    await writeJson(SESSIONS_FILE, active);
-  }
-  return active;
+  const now = new Date();
+  
+  // Supprimer les sessions expirées
+  await prisma.session.deleteMany({
+    where: { expiresAt: { lt: now } },
+  });
+  
+  const sessions = await prisma.session.findMany({
+    where: { expiresAt: { gt: now } },
+  });
+  
+  return sessions.map(session => ({
+    token: session.token,
+    userId: session.userId,
+    expiresAt: session.expiresAt.getTime(),
+  }));
 }
 
 export async function writeSessions(sessions: SessionRecord[]): Promise<void> {
-  await writeJson(SESSIONS_FILE, sessions);
+  // Cette fonction n'est plus vraiment utilisée mais on la garde pour compatibilité
+  // On nettoie d'abord les sessions existantes
+  await prisma.session.deleteMany({});
+  
+  // Puis on recrée toutes les sessions
+  for (const session of sessions) {
+    await prisma.session.create({
+      data: {
+        token: session.token,
+        userId: session.userId,
+        expiresAt: new Date(session.expiresAt),
+      },
+    });
+  }
 }
 
 export async function getSession(token: string): Promise<SessionRecord | undefined> {
-  const sessions = await readSessions();
-  return sessions.find(session => session.token === token);
+  const now = new Date();
+  const session = await prisma.session.findUnique({
+    where: { token },
+  });
+  
+  if (!session || session.expiresAt <= now) {
+    if (session) {
+      // Supprimer la session expirée
+      await prisma.session.delete({ where: { token } });
+    }
+    return undefined;
+  }
+  
+  return {
+    token: session.token,
+    userId: session.userId,
+    expiresAt: session.expiresAt.getTime(),
+  };
 }
 
 export async function createSession(userId: string): Promise<SessionRecord> {
   const token = generateSessionToken();
-  const session: SessionRecord = {
-    token,
-    userId,
-    expiresAt: Date.now() + SESSION_DURATION_MS
+  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
+  
+  const session = await prisma.session.create({
+    data: {
+      token,
+      userId,
+      expiresAt,
+    },
+  });
+  
+  return {
+    token: session.token,
+    userId: session.userId,
+    expiresAt: session.expiresAt.getTime(),
   };
-  const sessions = await readSessions();
-  sessions.push(session);
-  await writeSessions(sessions);
-  return session;
 }
 
 export async function deleteSession(token: string): Promise<void> {
-  const sessions = await readSessions();
-  const filtered = sessions.filter(session => session.token !== token);
-  await writeSessions(filtered);
+  await prisma.session.deleteMany({
+    where: { token },
+  });
 }
-

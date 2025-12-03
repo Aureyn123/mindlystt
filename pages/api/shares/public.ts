@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { parseCookies, getSession } from "@/lib/auth";
 import { getPublicShareByToken, deletePublicShare, getPublicSharesByNote } from "@/lib/shares";
-import { readJson } from "@/lib/db";
+import { getNoteById } from "@/lib/notes";
 
 const COOKIE_NAME = "mindlyst_session";
 
@@ -26,8 +26,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // Récupérer la note
-    const notes = await readJson<any[]>("notes.json", []);
-    const note = notes.find((n) => n.id === publicShare.noteId);
+    const note = await getNoteById(publicShare.noteId);
     if (!note) {
       return res.status(404).json({ error: "Note non trouvée" });
     }
@@ -47,8 +46,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // Vérifier que l'utilisateur est propriétaire de la note
-    const notes = await readJson<any[]>("notes.json", []);
-    const note = notes.find((n) => n.id === noteId);
+    const note = await getNoteById(noteId);
     if (!note || note.userId !== userId) {
       return res.status(403).json({ error: "Vous n'êtes pas propriétaire de cette note" });
     }
