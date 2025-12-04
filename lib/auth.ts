@@ -64,21 +64,38 @@ export async function readUsers(): Promise<UserRecord[]> {
   });
   
   // Convertir les types Prisma vers UserRecord
-  return users.map(user => ({
-    id: user.id,
-    email: user.email,
-    username: user.username,
-    passwordHash: user.passwordHash,
-    createdAt: user.createdAt.getTime(),
-    isAdmin: user.isAdmin,
-    customCategories: user.customCategories || undefined,
-  }));
+  return users.map(user => {
+    let customCategories: string[] | undefined = undefined;
+    if (user.customCategories) {
+      try {
+        customCategories = JSON.parse(user.customCategories);
+      } catch {
+        // Si ce n'est pas du JSON valide, on laisse undefined
+        customCategories = undefined;
+      }
+    }
+    
+    return {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      passwordHash: user.passwordHash,
+      createdAt: user.createdAt.getTime(),
+      isAdmin: user.isAdmin,
+      customCategories,
+    };
+  });
 }
 
 export async function writeUsers(users: UserRecord[]): Promise<void> {
   // Cette fonction n'est plus vraiment utilisée car on utilise directement Prisma
   // Mais on la garde pour compatibilité
   for (const user of users) {
+    // Convertir customCategories de string[] vers string JSON
+    const customCategoriesJson = user.customCategories 
+      ? JSON.stringify(user.customCategories) 
+      : null;
+    
     await prisma.user.upsert({
       where: { id: user.id },
       update: {
@@ -86,7 +103,7 @@ export async function writeUsers(users: UserRecord[]): Promise<void> {
         username: user.username,
         passwordHash: user.passwordHash,
         isAdmin: user.isAdmin || false,
-        customCategories: user.customCategories || null,
+        customCategories: customCategoriesJson,
       },
       create: {
         id: user.id,
@@ -94,7 +111,7 @@ export async function writeUsers(users: UserRecord[]): Promise<void> {
         username: user.username,
         passwordHash: user.passwordHash,
         isAdmin: user.isAdmin || false,
-        customCategories: user.customCategories || null,
+        customCategories: customCategoriesJson,
         createdAt: new Date(user.createdAt),
       },
     });

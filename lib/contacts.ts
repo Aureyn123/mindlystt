@@ -272,7 +272,6 @@ export async function findUserByUsername(username: string): Promise<{ id: string
     where: {
       username: {
         equals: username,
-        mode: "insensitive",
       },
     },
     select: {
@@ -291,7 +290,6 @@ export async function searchUsersByUsername(query: string, excludeUserId: string
       id: { not: excludeUserId },
       username: {
         contains: query,
-        mode: "insensitive",
       },
     },
     select: {
